@@ -1,0 +1,11 @@
+one layer autoencoder:
+  visible-hidden: sigmoid
+  hidden-visible: linear unit(mean squared error)
+  n_hidden =  128
+  v_h_learning_rate: 0.00001
+  h_v_learning_rate: 0.0001
+  train_epoches: 500
+  batch_size = 100
+  split the data(10000): 8:1:1
+  train_error = 6401.3
+  valid_error = 6869.32

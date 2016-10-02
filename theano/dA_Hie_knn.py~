@@ -1,0 +1,313 @@
+"""
+	This file is to build the one layer autoencoder model
+	Created by: Zexi Chen(zchen22)
+	Date: Aug 10
+"""
+
+import os 
+import sys
+import numpy
+import timeit
+
+import theano
+import theano.tensor as T
+from theano.tensor.shared_randomstreams import RandomStreams
+
+from load_data_Hie_knn import load_data
+
+"""
+Denoising Autoencoder algorithm copied from Theano digit recognition web
+Modified by Zexi Chen
+"""
+class dA(object):
+    def __init__(
+        self,
+        numpy_rng,
+        theano_rng=None,
+        input=None,
+        n_visible=23,
+        n_hidden=32,
+        W=None,
+        bhid=None,
+        bvis=None,
+	v_h_active=None, 
+	h_v_active=None
+    ):
+        """
+        :type numpy_rng: numpy.random.RandomState
+        :param numpy_rng: number random generator used to generate weights
+
+        :type theano_rng: theano.tensor.shared_randomstreams.RandomStreams
+        :param theano_rng: Theano random generator; if None is given one is
+                     generated based on a seed drawn from `rng`
+
+        :type input: theano.tensor.TensorType
+        :param input: a symbolic description of the input or None for
+                      standalone dA
+
+        :type n_visible: int
+        :param n_visible: number of visible units
+
+        :type n_hidden: int
+        :param n_hidden:  number of hidden units
+
+        :type W: theano.tensor.TensorType
+        :param W: Theano variable pointing to a set of weights that should be
+                  shared belong the dA and another architecture; if dA should
+                  be standalone set this to None
+
+        :type bhid: theano.tensor.TensorType
+        :param bhid: Theano variable pointing to a set of biases values (for
+                     hidden units) that should be shared belong dA and another
+                     architecture; if dA should be standalone set this to None
+
+        :type bvis: theano.tensor.TensorType
+        :param bvis: Theano variable pointing to a set of biases values (for
+                     visible units) that should be shared belong dA and another
+                     architecture; if dA should be standalone set this to None
+
+
+        """
+
+
+        self.n_visible = n_visible
+        self.n_hidden = n_hidden
+	if v_h_active == h_v_active:
+	    self.tied = True
+	else:
+	    self.tied = False
+	self.v_h_active = v_h_active
+	self.h_v_active = h_v_active
+	
+        # create the Theano random generator
+        if not theano_rng:
+            theano_rng = RandomStreams(numpy_rng.randint(2 ** 30))
+
+        # note : W' was written as `W_prime` and b' as `b_prime`
+        if not W:
+            # W is initialized with `initial_W` which is uniformely sampled
+            # from -4*sqrt(6./(n_visible+n_hidden)) and
+            # 4*sqrt(6./(n_hidden+n_visible))the output of uniform if
+            # converted using asarray to dtype
+            # theano.config.floatX so that the code is runable on GPU
+            initial_W = numpy.asarray(
+                numpy_rng.uniform(
+                    low=-4 * numpy.sqrt(6. / (n_hidden + n_visible)),
+                    high=4 * numpy.sqrt(6. / (n_hidden + n_visible)),
+                    size=(n_visible, n_hidden)
+                ),
+                dtype=theano.config.floatX
+            )
+            W = theano.shared(value=initial_W, name='W', borrow=True)
+
+        if not bvis:
+            bvis = theano.shared(
+                value=numpy.zeros(
+                    n_visible,
+                    dtype=theano.config.floatX
+                ),
+                borrow=True
+            )
+
+        if not bhid:
+            bhid = theano.shared(
+                value=numpy.zeros(
+                    n_hidden,
+                    dtype=theano.config.floatX
+                ),
+                name='b',
+                borrow=True
+            )
+
+        self.W = W
+        # b corresponds to the bias of the hidden
+        self.b = bhid
+        # b_prime corresponds to the bias of the visible
+        self.b_prime = bvis
+        if self.tied:
+            # tied weights
+            self.W_prime = self.W.T
+        else:
+            # use linear to output real-valued variables
+            self.W_prime = theano.shared(
+                value = numpy.zeros(
+                    (n_hidden, n_visible),
+                    dtype=theano.config.floatX
+                ),
+                name='W_prime',
+                borrow=True
+            )
+
+        self.theano_rng = theano_rng
+        if input is None:
+            # create a variable which is a matrix
+            # since we use a minibatch of several examples
+            self.x = T.dmatrix(name='input')
+        else:
+            self.x = input
+	
+	if self.tied:
+	    self.params = [self.W, self.b, self.b_prime]
+	else:
+	    self.params = [self.W, self.b, self.b_prime, self.W_prime]
+
+	self.output = self.get_hidden_values(self.x)
+
+    # look up the details of the corruption procedure again from the paper
+    def get_corrupted_input(self, input, corruption_level):
+        """
+    	This function tries to corrupt some information by setting them to zeroes
+    	"""
+       	return self.theano_rng.binomial(size=input.shape, n=1,
+                                		p=1 - corruption_level,
+                                		dtype=theano.config.floatX) * input
+
+    def get_hidden_values(self, input):
+    	""" Compute the values of the hidden layer """
+        if self.v_h_active is None:
+            return T.dot(input, self.W) + self.b
+        else:
+            return self.v_h_active(T.dot(input, self.W) + self.b)
+
+    def get_reconstructed_input(self, hidden):
+    	""" Compute the reconstructed input given the hidden layer"""
+        if self.h_v_active is None:
+            # use linear unit with Gaussian noise
+            return (T.dot(hidden, self.W_prime) + self.b_prime 
+                + self.theano_rng.normal(size=self.b_prime.shape))
+        else:
+            return self.h_v_active(T.dot(hidden, self.W_prime) + self.b_prime)
+
+    def get_cost_updates(self, corruption_level=0.0, v_h_learning_rate=0.1, 
+                        h_v_learning_rate=0.1):
+        """
+        This function computes the cost and the updates for one training step of dA
+        """
+
+        tilde_x = self.get_corrupted_input(self.x, corruption_level)
+        y = self.get_hidden_values(tilde_x)
+        z = self.get_reconstructed_input(y)
+
+        if self.h_v_active is None:
+            # define the cost function as the mean squared error L2
+            L = 0.5 * T.sum((self.x - z)**2, axis = 1)
+        else:
+            L = - T.sum(self.x * T.log(z) + (1 - self.x) * T.log(1-z), axis = 1)
+
+        cost =  T.mean(L)
+	'''
+        # compute the gradients of the cost of the 'dA' with respect to its parameters
+        g_W = T.grad(cost, wrt=self.W)
+        g_b = T.grad(cost, wrt=self.b)
+        g_b_prime = T.grad(cost, wrt=self.b_prime)
+        # generate the list of updates
+        updates = [
+            (self.W, self.W - v_h_learning_rate * g_W),
+            (self.b, self.b - v_h_learning_rate * g_b),
+            (self.b_prime, self.b_prime - h_v_learning_rate * g_b_prime)
+        ]
+	if not self.tied:
+	    g_W_prime = T.grad(cost, wrt=self.W_prime)
+	    updates.append((self.W_prime, self.W_prime - h_v_learning_rate * g_b_prime))
+	'''
+	gparams = T.grad(cost, self.params)
+	updates = []
+	for i in range(len(self.params)):
+	    if i >=0 and i <= 1:
+		updates.append((self.params[i], self.params[i] - gparams[i] * v_h_learning_rate))
+	    else:
+		updates.append((self.params[i], self.params[i] - gparams[i] * h_v_learning_rate))
+        return (cost, updates) 
+
+    def get_error(self, z):
+	if self.h_v_active is None:
+	    L = 0.5 * T.sum((self.x - z)**2, axis = 1)
+        else:
+            L = - T.sum(self.x * T.log(z) + (1 - self.x) * T.log(1-z), axis = 1)
+
+        cost =  T.mean(L)
+	return cost
+
+def test_dA(v_h_learning_rate =  0.1, h_v_learning_rate = 0.1, training_epochs = 15,
+            dataset='samples', output_folder = 'dA_result',
+            v_h_active = None, h_v_active = None, batch_size = 20, n_visible =  23, 
+            n_hidden = 32):
+    """
+    this function is used to perform the autoencoder on our dataset
+    """
+    datasets = load_data(dataset)
+    train_set = datasets[0]
+    valid_set = datasets[1]
+    test_set = datasets[2]
+
+    # compute the number of minibatches for training, validation and testing
+    n_train_batches = train_set.get_value(borrow=True).shape[0] // batch_size
+    n_valid_batches = valid_set.get_value(borrow=True).shape[0] // batch_size
+    n_test_batches = test_set.get_value(borrow=True).shape[0] // batch_size
+
+    # allocate a variable to track the mini batch number
+    index = T.lscalar()    
+    # allocate symbolic variable folr the data
+    x = T.matrix('x')
+
+    rng = numpy.random.RandomState(111)
+    theano_rng =  RandomStreams(rng.randint(2 ** 30))
+
+    da = dA(
+        numpy_rng = rng,
+        theano_rng = theano_rng,
+        input = x,
+        n_visible = n_visible,
+        n_hidden = n_hidden,
+	v_h_active=v_h_active, 
+	h_v_active=h_v_active
+    )
+
+    cost, updates = da.get_cost_updates(
+        corruption_level = 0.,
+        v_h_learning_rate = v_h_learning_rate,
+        h_v_learning_rate = h_v_learning_rate
+    )
+
+    train_da = theano.function(
+        [index],
+        cost,
+        updates = updates,
+        givens = {
+            x: train_set[index * batch_size: (index + 1) * batch_size]
+        }
+    )
+
+    valid_da = theano.function(
+        inputs=[index],
+        outputs = cost,
+        givens={
+            x: valid_set[index * batch_size: (index + 1) * batch_size]
+        }
+    )
+
+    start_time = timeit.default_timer()
+
+    """Train the model """
+    for epoch in range(training_epochs):
+        # go through training set
+        c = []
+        for batch_index in range(n_train_batches):
+            c.append(train_da(batch_index))
+        valid_losses = [valid_da(i) for i in range(n_valid_batches)]
+        this_valid_losses = numpy.mean(valid_losses)
+
+        print 'Training epoch %d, cost ' % epoch, numpy.mean(c)
+        print 'Validation cost ', this_valid_losses
+
+    end_time = timeit.default_timer()
+
+    training_time = (end_time -start_time)
+
+    print('The no corruption code ran for %.2fm' % (training_time/60.))
+
+if __name__ == '__main__':
+    test_dA(v_h_learning_rate =  0.00001, h_v_learning_rate = 0.0001, training_epochs = 500,
+            dataset='samples', output_folder = 'dA_result',
+            v_h_active = T.nnet.sigmoid, h_v_active = None, batch_size = 100, n_visible =  23, 
+            n_hidden = 128)
