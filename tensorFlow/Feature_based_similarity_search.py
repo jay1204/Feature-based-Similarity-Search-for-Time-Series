@@ -192,9 +192,10 @@ def run_model(n_hiddens = [10], learning_rate = [1e-2], training_epochs = 10000)
             valid_error.append(valid_err)
             print("step %d, the mean error of the training data %g, vilidation data %g"%(i, train_error[-1][0], valid_error[-1][0]))
             #print h_conv1_flat.eval(feed_dict={x:test_set1})
-            if valid_error[-1] < best_valid_error * 0.995:
+            if valid_error[-1][0] < best_valid_error * 0.995:
                 W_best = sess.run(nn1.W)
                 b_best = sess.run(nn1.b)
+                best_valid_error = valid_error[-1][0]
 
 if __name__ == '__main__':
     run_model()

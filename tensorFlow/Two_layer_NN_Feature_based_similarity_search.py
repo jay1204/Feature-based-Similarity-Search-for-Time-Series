@@ -61,12 +61,12 @@ def run_model(n_hiddens = [10], learning_rate = [1e-2], training_epochs = 10000)
     )
 
     nn2 = NeuNet(
-    	None,
-    	None,
-    	input = nn1.output,
-    	activation = tf.nn.sigmoid,
-    	n_visible = n_hiddens[0]*2,
-    	n_hidden = n_hiddens[1]
+        None,
+        None,
+        input = nn1.output,
+        activation = tf.nn.sigmoid,
+        n_visible = n_hiddens[0]*2,
+        n_hidden = n_hiddens[1]
     )
 
     # compute the cost and minimize it
